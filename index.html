@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-<title>King's Grid — Battle Practice Training Mode v0.4.0</title>
+<title>King's Grid — Battle Practice Training Mode v0.5.0</title>
 <style>
 :root{
   --paper:#f4e7c6;--paper2:#dfc894;--ink:#2b2118;--muted:#78684f;--line:#9c8155;
@@ -38,7 +38,7 @@ button{font:inherit;color:inherit}.app{max-width:1600px;margin:0 auto;padding:12
 <body>
 <div class="app">
   <header class="topbar">
-    <div class="brand"><div class="crest">♛</div><div><h1>King's Grid</h1><small>Human vs CPU • Battle Practice Training Mode v0.4.0</small></div></div>
+    <div class="brand"><div class="crest">♛</div><div><h1>King's Grid</h1><small>Human vs CPU • Battle Practice Training Mode v0.5.0</small></div></div>
     <div class="roundbox"><strong id="roundLabel">Round 1</strong><span class="firstpill" id="firstPill">HUMAN ACTS FIRST</span></div>
     <div class="toolbar"><select class="btn" id="cpuLevelSel"><option value="beginner">CPU: Beginner</option><option value="mid" selected>CPU: Mid</option><option value="master">CPU: Master</option></select><button class="btn coach-btn" id="coachSuggestBtn">💡 Coach Suggestion</button><button class="btn" id="reviewBtn" disabled>📋 Reviews</button><button class="btn danger" id="concedeBtn">🏳 Concede</button><button class="btn danger" id="stalemateBtn">⚑ Stalemate</button><button class="btn" id="speedBtn">CPU: Normal</button><button class="btn primary" id="newBtn">⚄ New Battle</button></div>
   </header>
@@ -64,7 +64,7 @@ button{font:inherit;color:inherit}.app{max-width:1600px;margin:0 auto;padding:12
       <div class="action-head"><h2>Command</h2><span class="selected-copy" id="selectedCopy">Select a highlighted unit when it is your initiative.</span></div>
       <div class="actions" id="actions"></div>
       <div class="hint" id="hint">The gold initiative tile shows which unit type is currently acting. Training Mode records your decisions during play and gives you a Coach Bob review when the battle ends.</div>
-      <div class="prototype-note">Training mockup: the locked Battle Practice rules are represented here. Spear/Lance attacks may route around wall corners within their range, but cannot pass through a wall tile. Range measurement and the exact random-deployment region remain prototype conventions while the full rules engine is finalized.</div>
+      <div class="prototype-note">Training mockup v0.5.0: Mid and Master use the corrected 500-battle tactical study as a policy seed, with initiative-aware safety and move/action/move search. The locked Battle Practice rules are represented here. Spear/Lance attacks may route around wall corners within their range, but cannot pass through a wall tile. Range measurement and the exact random-deployment region remain prototype conventions while the full rules engine is finalized.</div>
     </section>
     <section class="log"><h2>Battle Chronicle</h2><div class="logbox" id="logbox"></div></section>
   </div>
@@ -303,7 +303,27 @@ function knockbackSpotsFrom(attPos,target){
 }
 function knockbackSpots(attacker,target){return knockbackSpotsFrom({x:attacker.x,y:attacker.y},target)}
 function applyKnockback(attacker,target,spot){ if(!spot) return false; coachReviewKnockback(attacker,target,spot); target.x=spot.x; target.y=spot.y; log(`Spear knockback repositions the target to ${String.fromCharCode(65+spot.x)}${10-spot.y}.`); coachRecordAction(attacker,'knockback',{targetId:target.id,x:spot.x,y:spot.y}); return true; }
-function chooseCpuKnockback(attacker,target,spots){ if(!spots.length) return null; spots=spots.slice().sort((a,b)=>{let da=Math.min(...alive('human').filter(x=>x!==target).map(e=>dist(a,e)).concat([99])); let db=Math.min(...alive('human').filter(x=>x!==target).map(e=>dist(b,e)).concat([99])); let ea=dist(attacker,a), eb=dist(attacker,b); return (db-da)||(eb-ea)||((a.x+a.y)-(b.x+b.y));}); return spots[0]; }
+function chooseCpuKnockback(attacker,target,spots){
+ if(!spots.length)return null;
+ if(attacker.team!=='cpu'||S.cpuLevel==='beginner')return rand(spots);
+ let level=S.cpuLevel==='master'?'master':'mid';
+ let beforeCovered=isWallCovered(target),targetActs=cpuTargetActsLaterThisRound(target),allies=alive('cpu').filter(x=>x!==attacker),foes=alive('human').filter(x=>x!==target);
+ let scored=spots.map(p=>{
+   let score=0;
+   // Board control: isolate the victim from its army and pull it into follow-up lanes.
+   let allyReach=allies.filter(a=>D[a.type].range&&dist(a,p)<=D[a.type].move+D[a.type].range).length;
+   let foeSupport=foes.length?Math.min(...foes.map(f=>dist(p,f))):6;
+   score+=allyReach*(level==='master'?4.0:2.5)+Math.min(5,foeSupport)*0.8;
+   // Removing ranged wall cover is particularly valuable.
+   let fake={...target,x:p.x,y:p.y};
+   if(beforeCovered&&!isWallCoveredAt(fake))score+=6;
+   if(targetActs)score+=2.5;
+   // Prefer pushing away from the target's allies and not toward the Spear.
+   score+=dist(attacker,p)*0.45;
+   return{p,score};
+ }).sort((a,b)=>b.score-a.score);
+ return scored[0].p;
+}
 function attack(u,t){
  let d=D[u.type];
  if(u.actionsLeft<1||!t||!t.alive||t.team===u.team||dist(u,t)>d.range)return false;
@@ -487,117 +507,211 @@ function bobLiveSuggestionFor(u){let d=D[u.type];if(d.kind==='combat')return bob
 function showCoachSuggestion(){if(S.gameOver||S.busy||S.phase!=='human'||S.mode!=='idle'||S.pendingWall||S.pendingKnockback){hint('Coach Bob can give a live suggestion when it is your turn and no special selection is in progress.');return}let u=S.selected&&S.selected.team==='human'&&!S.selected.activated?S.selected:alive('human',currentType()).find(x=>!x.activated);if(!u){hint('There is no human unit to advise in this initiative.');return}if(S.selected!==u)selectUnit(u);let s=bobLiveSuggestionFor(u);if(!s){hint(`Coach Bob does not see a materially better action for the ${D[u.type].name} right now.`);return}S.coachSuggestion=s;S.review.suggestionsUsed=(S.review.suggestionsUsed||0)+1;let h=$('#hint');if(h)h.classList.add('coach-hint');hint(`Coach Bob: ${s.text}`);render()}
 function concedeBattle(){if(S.gameOver)return;if(!confirm('Concede this battle? Coach Bob will still review both sides.'))return;S.conceded=true;log('<strong>Human concedes the battle.</strong>');endResult('CPU Victory','winner-cpu','You conceded. Coach Bob has analyzed both armies through the position at resignation.','cpu')}
 
-function cpuPriority(u){let d=D[u.type],p=0;if(d.range&&targetsFor(u).length)p+=10;if(d.kind==='medic'&&alive('cpu').some(x=>x.type!=='medic'&&x.hp<x.maxHp&&dist(u,x)<=3))p+=8;if(d.kind==='reviver'&&legalRevives(u).length)p+=8;let es=alive('human'); let nearest=es.length?Math.min(...es.map(e=>dist(u,e))):0; return p-nearest/10}
+
+// -----------------------------------------------------------------------------
+// CPU v2 — v0.5.0
+// Seeded from MASTER_POLICY_CORRECTED.json and the corrected 500-battle study.
+// The study explicitly recommends initiative tempo, move/action/move search,
+// retaliation maps, selective Mage/Strategist use, and per-unit tactics.
+// -----------------------------------------------------------------------------
+const CPU_LEARNED={
+ master:{safety:1.75,kite:1.55,killBonus:3.2,threatFocus:1.35,pressure:1.05,patience:.55,wallValue:1.25,healValue:1.5,reviveValue:2.2,breadValue:.9,mageThreshold:2.6,strategistThreshold:2.0,exploration:.02},
+ mid:{safety:1.30,kite:1.12,killBonus:2.65,threatFocus:1.05,pressure:.86,patience:.38,wallValue:1.0,healValue:1.25,reviveValue:1.8,breadValue:.82,mageThreshold:2.9,strategistThreshold:2.35,exploration:.06}
+};
+const CPU_BASE_THREAT={wood:.70,stone:.72,iron:.82,sword:1.55,spear:1.62,bow:1.35,lance:1.45,mage:1.10,priest:1.02,medic:1.25,necro:1.00,farmer:.82,strategist:1.08};
+const CPU_UNIT_VALUE={wood:1.00,stone:1.05,iron:1.20,sword:1.65,spear:1.75,bow:1.45,lance:1.55,mage:1.15,priest:1.00,medic:1.30,necro:1.00,farmer:1.05,strategist:1.10};
+const CPU_PRESENCE_PRIOR={lance:.590,spear:.564,medic:.510,sword:.505,stone:.493,farmer:.491,bow:.482,priest:.470,strategist:.449,iron:.424,mage:.422,wood:.417,necro:.392};
+const CPU_BEFORE_OWN_STEP_DEATH={wood:0,stone:0,iron:0,sword:.133,spear:.373,bow:.661,lance:.868,mage:.972,medic:1,priest:1,necro:1,farmer:1,strategist:1};
+function cpuCfg(level){return CPU_LEARNED[level==='master'?'master':'mid']}
+function cpuLearnedValue(x){let t=typeof x==='string'?x:x.type;return CPU_UNIT_VALUE[t]||1}
+function cpuThreatValue(x){let t=typeof x==='string'?x:x.type;return CPU_BASE_THREAT[t]||1}
+function isWallCoveredAt(target){return S.walls.some(w=>w.cells.some(c=>Math.abs(c.x-target.x)+Math.abs(c.y-target.y)===1))}
+function cpuTargetActsLaterThisRound(target){
+ let ti=INIT.findIndex(x=>x[0]===target.type);if(ti<0)return false;
+ if(ti>S.initiative)return true;if(ti<S.initiative)return false;
+ // Same type: first player acts first at the shared initiative.
+ return S.phase==='cpu'&&S.first==='cpu'&&target.team==='human';
+}
+function cpuPriority(u){let d=D[u.type],p=0;if(d.range&&targetsFor(u).length)p+=14;if(d.kind==='medic'&&alive('cpu').some(x=>x.type!=='medic'&&x.hp<x.maxHp&&dist(u,x)<=3))p+=10;if(d.kind==='reviver'&&legalRevives(u).length)p+=12;if(['sword','spear','lance'].includes(u.type))p+=3;let es=alive('human');let nearest=es.length?Math.min(...es.map(e=>dist(u,e))):0;return p-nearest/10}
 function unitValue(u){let weights={strategist:1,wood:2,stone:2,iron:2,farmer:2,medic:4,priest:4,necro:4,sword:5,spear:5,bow:5,lance:6,mage:6};return weights[u.type]||3}
 function nearestEnemy(u){let es=alive(enemy(u.team));if(!es.length)return null;return es.sort((a,b)=>dist(u,a)-dist(u,b))[0]}
-function bestAttack(u){let ts=targetsFor(u);if(!ts.length)return null;return ts.sort((a,b)=>(a.hp-b.hp)||(unitValue(b)-unitValue(a)))[0]}
-function cpuMoveBasic(u,randomBias=false){let target=nearestEnemy(u);if(!target)return;let opts=bfs(u,u.movementLeft);if(!opts.length)return; if(randomBias){let pick=rand(opts); moveUnit(u,pick.x,pick.y); return;} let d=D[u.type];let ranged=['bow','mage'].includes(u.type);opts.push({x:u.x,y:u.y,d:0});opts.sort((a,b)=>{let da=dist(a,target),db=dist(b,target);if(ranged){let ideal=d.range>4?4:Math.max(1,d.range);return Math.abs(da-ideal)-Math.abs(db-ideal)}return da-db});let p=opts[0];if(p.d>0)moveUnit(u,p.x,p.y)}
-function cpuRandomTarget(u){let ts=targetsFor(u); return ts.length?rand(ts):null;}
-function sacrificeCandidates(team,exclude){return alive(team).filter(x=>x!==exclude&&x.type!=='mage').sort((a,b)=>unitValue(a)-unitValue(b));}
-function bestAttackOptionFromPos(u,pos){
-  let best=null;
-  for(let t of targetsFromPos(u,pos)){
-    let score=(t.hp<=D[u.type].damage?100:0)+D[u.type].damage*18+unitValue(t)*9-t.hp*2;
-    if(u.type==='spear'){let spots=knockbackSpotsFrom(pos,t); score += spots.length?8:0;}
-    if(!best||score>best.score) best={kind:'unit',target:t,score};
-  }
-  for(let w of wallTargetsFromPos(u,pos)){
-    if(w.mat==='iron')continue;
-    let score=10+(w.hp<=D[u.type].damage?12:0);
-    if(!best||score>best.score) best={kind:'wall',target:w,score};
-  }
-  return best;
+function bestAttack(u){let ts=targetsFor(u);if(!ts.length)return null;return ts.sort((a,b)=>cpuAttackScoreAdvanced(u,b,{x:u.x,y:u.y},S.cpuLevel)-cpuAttackScoreAdvanced(u,a,{x:u.x,y:u.y},S.cpuLevel))[0]}
+function cpuMoveBasic(u,randomBias=false){let target=nearestEnemy(u);if(!target)return;let opts=bfs(u,u.movementLeft);if(!opts.length)return;if(randomBias){let pick=rand(opts);moveUnit(u,pick.x,pick.y);return}let d=D[u.type];let ranged=['bow','mage'].includes(u.type);opts.push({x:u.x,y:u.y,d:0});opts.sort((a,b)=>{let da=dist(a,target),db=dist(b,target);if(ranged){let ideal=d.range>4?4:Math.max(1,d.range);return Math.abs(da-ideal)-Math.abs(db-ideal)}return da-db});let p=opts[0];if(p.d>0)moveUnit(u,p.x,p.y)}
+function cpuRandomTarget(u){let ts=targetsFor(u);return ts.length?rand(ts):null}
+function moveToPosition(u,p){if(!p)return;if(u.x===p.x&&u.y===p.y)return;moveUnit(u,p.x,p.y)}
+function sacrificeCandidates(team,exclude){return alive(team).filter(x=>x!==exclude&&x.type!=='mage').sort((a,b)=>cpuLearnedValue(a)*(a.hp/a.maxHp)-cpuLearnedValue(b)*(b.hp/b.maxHp))}
+function cpuStateAtPos(u,p){let st=coachState(),su=bobUnitAt(st,u.id);su.x=p.x;su.y=p.y;return st}
+function cpuSimAttackState(u,p,target){let st=cpuStateAtPos(u,p),t=bobUnitAt(st,target.id);if(t){t.hp-=D[u.type].damage;if(t.hp<=0){t.hp=0;t.alive=false}}if(u.type==='bow')st.res.cpu.arrows=Math.max(0,(st.res.cpu.arrows||0)-1);return st}
+function cpuNearestEnemyDistance(st,team,p){let es=st.units.filter(x=>x.alive&&x.team===enemy(team));return es.length?Math.min(...es.map(e=>dist(p,e))):9}
+function cpuPotentialNextThreat(st,u,p){let d=D[u.type];if(!d.range)return 0;let enemies=st.units.filter(x=>x.alive&&x.team===enemy(u.team));let n=0;for(let e of enemies){if(dist(p,e)<=d.move+d.range)n+=cpuThreatValue(e)}return n}
+function cpuEndPositionScore(st,u,p,level,afterAction=false){
+ let cfg=cpuCfg(level),su=bobUnitAt(st,u.id);if(!su)return-999;su.x=p.x;su.y=p.y;
+ let report=bobThreatReport(st,u.id),score=0,hp=Math.max(1,su.hp),ratio=report.damage/hp;
+ score-=cfg.safety*report.damage*8.5;
+ if(report.lethal)score-=42+cpuLearnedValue(u)*14;
+ else if(ratio>=.75)score-=10*cfg.safety;
+ let nearest=cpuNearestEnemyDistance(st,u.team,p),covered=bobWallCovered(st,su);
+ if(u.type==='bow'){
+   score-=Math.abs(nearest-4)*2.0*cfg.kite;if(covered)score+=7*cfg.kite;if(nearest<=2)score-=12;
+ }else if(u.type==='mage'){
+   score-=Math.abs(nearest-5)*1.4*cfg.kite;if(covered)score+=6*cfg.kite;if(nearest<=2)score-=16;
+ }else if(['medic','priest','necro','strategist'].includes(u.type)){
+   score-=Math.max(0,3-nearest)*3.2*cfg.kite;if(covered)score+=4.5*cfg.kite;
+   let allies=st.units.filter(x=>x.alive&&x.team===u.team&&x.id!==u.id);if(allies.length)score-=Math.min(...allies.map(a=>dist(p,a)))*.35;
+ }else if(u.type==='lance'){
+   score-=Math.abs(nearest-2)*1.25*cfg.pressure;
+ }else if(u.type==='spear'){
+   score-=Math.abs(nearest-2)*1.05*cfg.pressure;
+ }else if(u.type==='sword'){
+   score-=nearest*1.15*cfg.pressure;
+ }else if(['wood','stone','iron'].includes(u.type))score-=nearest*.35*cfg.pressure;
+ score+=cpuPotentialNextThreat(st,u,p)*1.25*cfg.pressure;
+ // When ahead, or when a battle is dragging on, convert rather than endlessly kite.
+ let advantage=bobTeamEval(st,'cpu'),conversionPush=Math.max(0,advantage-1.5)*.22+Math.max(0,S.round-8)*.05;
+ if(conversionPush>0)score-=nearest*conversionPush*cfg.pressure;
+ let center=Math.abs(p.x-4.5)+Math.abs(p.y-4.5);score-=center*.08*cfg.pressure;
+ return score;
 }
-function moveToPosition(u,p){ if(u.x===p.x && u.y===p.y) return; moveUnit(u,p.x,p.y); }
-function chooseMasterCombatPlan(u){
-  let positions=reachablePositions(u), best=null;
-  for(let p of positions){
-    let opt=bestAttackOptionFromPos(u,p); let score=opt?opt.score:0;
-    let nearest=alive('human').length?Math.min(...alive('human').map(e=>dist(p,e))):0;
-    if(!opt){
-      if(['bow'].includes(u.type)) score=20-Math.abs(nearest-4)*4;
-      else if(['lance'].includes(u.type)) score=18-nearest*3;
-      else score=16-nearest*4;
-    } else score += 30;
-    score -= p.d*0.3;
-    if(!best||score>best.score) best={p,opt,score};
-  }
-  return best;
+function cpuAttackScoreAdvanced(u,t,p,level){
+ let cfg=cpuCfg(level),d=D[u.type],kill=t.hp<=d.damage,score=d.damage*(7+cfg.threatFocus*cpuThreatValue(t)*5);
+ score+=cpuLearnedValue(t)*cfg.threatFocus*7;
+ if(kill){score+=cfg.killBonus*cpuLearnedValue(t)*12;if(cpuTargetActsLaterThisRound(t))score+=10+cpuThreatValue(t)*8+(CPU_BEFORE_OWN_STEP_DEATH[t.type]||0)*12;}
+ else if(cpuTargetActsLaterThisRound(t))score+=2.5;
+ score+=(1/Math.max(1,t.hp))*2.5;
+ if(['medic','priest','necro','strategist'].includes(t.type))score+=4;
+ if(u.type==='bow'){
+   let arrows=S.res.cpu.arrows||0;if(!kill&&arrows<=1)score-=11;if(!kill&&cpuThreatValue(t)<1.1)score-=4;
+ }
+ if(u.type==='spear'){
+   let spots=knockbackSpotsFrom(p,t);score+=Math.min(10,spots.length*1.1);
+   if(isWallCovered(t))score+=5;
+ }
+ if(u.type==='lance'&&kill)score+=4;
+ return score;
 }
-function chooseMasterMedicPlan(u){
-  let positions=reachablePositions(u), best=null;
-  for(let p of positions){
-    let allies=healableAlliesFromPos(u,p); if(!allies.length) continue;
-    let t=allies.sort((a,b)=> (a.hp-b.hp) || (unitValue(b)-unitValue(a)))[0];
-    let score=(t.maxHp-t.hp)*20 + unitValue(t)*6 - p.d;
-    if(!best || score>best.score) best={p,target:t,score};
-  }
-  return best;
+function cpuBestWallAttackFrom(u,p){let best=null;for(let w of wallTargetsFromPos(u,p)){if(w.mat==='iron')continue;let protects=alive('human').filter(e=>w.cells.some(c=>Math.abs(c.x-e.x)+Math.abs(c.y-e.y)===1)).length;let score=4+protects*7+(w.hp<=D[u.type].damage?12:0);if(!best||score>best.score)best={kind:'wall',target:w,score}}return best}
+function cpuPostPositionsFor(st,u,p,remaining){let su=bobUnitAt(st,u.id);su.x=p.x;su.y=p.y;return[{x:p.x,y:p.y,d:0},...bobBfs(st,su,remaining)]}
+function cpuPickPlan(plans,level){
+ if(!plans.length)return null;plans.sort((a,b)=>b.score-a.score);
+ let cfg=cpuCfg(level);if(Math.random()<cfg.exploration&&plans.length>1)return plans[Math.floor(Math.random()*Math.min(level==='master'?2:3,plans.length))];return plans[0]
 }
-function chooseMasterRevivePlan(u){
-  let positions=reachablePositions(u), best=null;
-  for(let p of positions){
-    let cs=legalRevivesFromPos(u,p); if(!cs.length) continue;
-    let c=cs.sort((a,b)=>unitValue(b.unit)-unitValue(a.unit))[0];
-    let score=60 + unitValue(c.unit)*10 - p.d;
-    if(!best || score>best.score) best={p,target:c,score};
-  }
-  return best;
+function cpuCombatPlans(u,level){
+ let starts=[{x:u.x,y:u.y,d:0},...bfs(u,u.movementLeft)],plans=[],d=D[u.type];
+ for(let pre of starts){
+   let unitTargets=targetsFromPos(u,pre);
+   for(let t of unitTargets){
+     let actionScore=cpuAttackScoreAdvanced(u,t,pre,level),st=cpuSimAttackState(u,pre,t),remaining=Math.max(0,u.movementLeft-pre.d),posts=cpuPostPositionsFor(st,u,pre,remaining),bestPost=null;
+     for(let post of posts){let ps=cpuEndPositionScore(st,u,post,level,true);if(!bestPost||ps>bestPost.score)bestPost={p:post,score:ps}}
+     let total=actionScore+(bestPost?.score||0)-pre.d*.15;
+     plans.push({kind:'attack',pre:{x:pre.x,y:pre.y},post:bestPost?.p||pre,target:t,score:total,actionScore});
+   }
+   let wopt=cpuBestWallAttackFrom(u,pre);if(wopt){let st=cpuStateAtPos(u,pre),remaining=Math.max(0,u.movementLeft-pre.d),posts=cpuPostPositionsFor(st,u,pre,remaining),bestPost=null;for(let post of posts){let ps=cpuEndPositionScore(st,u,post,level,true);if(!bestPost||ps>bestPost.score)bestPost={p:post,score:ps}}plans.push({kind:'attackWall',pre:{x:pre.x,y:pre.y},post:bestPost?.p||pre,target:wopt.target,score:wopt.score+(bestPost?.score||0)})}
+ }
+ // Reposition-only candidate. Master values survival without becoming passive.
+ let base=coachState();for(let p of starts){let st=bobClone(base),su=bobUnitAt(st,u.id);su.x=p.x;su.y=p.y;let ps=cpuEndPositionScore(st,u,p,level,false)-cpuCfg(level).patience*2;plans.push({kind:'move',pre:{x:p.x,y:p.y},post:{x:p.x,y:p.y},score:ps})}
+ return plans;
 }
-function chooseMasterMagePlan(u){
-  let sacrifice=sacrificeCandidates('cpu',u)[0]; if(!sacrifice) return null;
-  let positions=reachablePositions(u), best=null;
-  for(let p of positions){
-    let fake={type:'mage'};
-    let ts=alive('human').filter(t=>dist(p,t)<=7&&!protectedByWall(t,fake)).sort((a,b)=>(a.hp-b.hp)||(unitValue(b)-unitValue(a))).slice(0,3);
-    if(ts.length<2) continue;
-    let score=ts.reduce((s,t)=>s+15+unitValue(t)*7+(t.hp<=1?12:0),0)-unitValue(sacrifice)*3-p.d;
-    if(!best||score>best.score) best={p,sacrifice,targets:ts,score};
-  }
-  return best;
+function chooseMasterCombatPlan(u){return cpuPickPlan(cpuCombatPlans(u,'master'),'master')}
+function chooseMidCombatPlan(u){return cpuPickPlan(cpuCombatPlans(u,'mid'),'mid')}
+function cpuExecuteCombatPlan(u,plan){if(!plan)return false;moveToPosition(u,plan.pre);if(plan.kind==='attack'&&u.actionsLeft>0&&plan.target.alive)attack(u,plan.target);else if(plan.kind==='attackWall'&&u.actionsLeft>0&&S.walls.includes(plan.target))attackWall(u,plan.target);if(u.alive&&u.movementLeft>0&&plan.post)moveToPosition(u,plan.post);return true}
+function cpuSupportPostScore(st,u,p,level){return cpuEndPositionScore(st,u,p,level,true)}
+function cpuMedicPlan(u,level){
+ let starts=[{x:u.x,y:u.y,d:0},...bfs(u,u.movementLeft)],plans=[];
+ for(let pre of starts)for(let t of healableAlliesFromPos(u,pre)){
+   let st=cpuStateAtPos(u,pre),tt=bobUnitAt(st,t.id);tt.hp=Math.min(tt.maxHp,tt.hp+1);let remain=Math.max(0,u.movementLeft-pre.d),posts=cpuPostPositionsFor(st,u,pre,remain),best=null;
+   for(let post of posts){let s=cpuSupportPostScore(st,u,post,level);if(!best||s>best.score)best={p:post,score:s}}
+   let healUrgency=(t.maxHp-t.hp)*10+cpuLearnedValue(t)*8;let tr=bobThreatReport(coachState(),t.id);if(tr.lethal)healUrgency+=14;
+   plans.push({pre,post:best?.p||pre,target:t,score:healUrgency*cpuCfg(level).healValue+(best?.score||0)});
+ }
+ return cpuPickPlan(plans,level)
 }
+function cpuRevivePlan(u,level){
+ let starts=[{x:u.x,y:u.y,d:0},...bfs(u,u.movementLeft)],plans=[];
+ for(let pre of starts)for(let c of legalRevivesFromPos(u,pre)){
+   let st=cpuStateAtPos(u,pre),remain=Math.max(0,u.movementLeft-pre.d),posts=cpuPostPositionsFor(st,u,pre,remain),best=null;
+   for(let post of posts){let s=cpuSupportPostScore(st,u,post,level);if(!best||s>best.score)best={p:post,score:s}}
+   let tempo=cpuTargetActsLaterThisRound(c.unit)?8:0;plans.push({pre,post:best?.p||pre,target:c,score:(cpuLearnedValue(c.unit)*25+tempo)*cpuCfg(level).reviveValue+(best?.score||0)});
+ }
+ return cpuPickPlan(plans,level)
+}
+function cpuMagePlan(u,level){
+ let sacrifices=sacrificeCandidates('cpu',u);if(!sacrifices.length)return null;let cfg=cpuCfg(level),starts=[{x:u.x,y:u.y,d:0},...bfs(u,u.movementLeft)],plans=[];
+ for(let pre of starts){let fake={type:'mage'},ts=alive('human').filter(t=>dist(pre,t)<=7&&!protectedByWall(t,fake)).sort((a,b)=>cpuAttackScoreAdvanced({type:'mage'},b,pre,level)-cpuAttackScoreAdvanced({type:'mage'},a,pre,level)).slice(0,3);if(ts.length<2)continue;
+   for(let sac of sacrifices.slice(0,2)){
+     let gain=ts.reduce((s,t)=>s+8+cpuLearnedValue(t)*7+(t.hp<=1?22:0)+(cpuTargetActsLaterThisRound(t)?4:0),0),cost=cpuLearnedValue(sac)*(12+8*sac.hp/sac.maxHp),net=gain-cost;
+     if(net<cfg.mageThreshold*10)continue;
+     let st=cpuStateAtPos(u,pre),ss=bobUnitAt(st,sac.id);if(ss){ss.hp=0;ss.alive=false}for(let t of ts){let tt=bobUnitAt(st,t.id);tt.hp-=1;if(tt.hp<=0){tt.hp=0;tt.alive=false}}
+     let remain=Math.max(0,u.movementLeft-pre.d),posts=cpuPostPositionsFor(st,u,pre,remain),best=null;for(let post of posts){let s=cpuEndPositionScore(st,u,post,level,true);if(!best||s>best.score)best={p:post,score:s}}
+     plans.push({pre,post:best?.p||pre,sacrifice:sac,score:net+(best?.score||0)});
+   }
+ }
+ return cpuPickPlan(plans,level)
+}
+function cpuWallCandidatesAt(u,pos){
+ let out=[],occ=new Set();for(let x of S.units)if(x.alive||corpseAt(x.x,x.y))if(x.id!==u.id)occ.add(key(x.x,x.y));for(let w of S.walls)for(let c of w.cells)occ.add(key(c.x,c.y));
+ for(let ori of ['h','v']){
+   if(ori==='h')for(let y=0;y<BOARD;y++)for(let sx=0;sx<=BOARD-5;sx++){let cells=Array.from({length:5},(_,i)=>({x:sx+i,y}));if(!cells.some(c=>Math.abs(c.x-pos.x)+Math.abs(c.y-pos.y)===1)||cells.some(c=>c.x===pos.x&&c.y===pos.y)||cells.some(c=>occ.has(key(c.x,c.y))))continue;out.push({orientation:ori,cells})}
+   if(ori==='v')for(let x=0;x<BOARD;x++)for(let sy=0;sy<=BOARD-5;sy++){let cells=Array.from({length:5},(_,i)=>({x,y:sy+i}));if(!cells.some(c=>Math.abs(c.x-pos.x)+Math.abs(c.y-pos.y)===1)||cells.some(c=>c.x===pos.x&&c.y===pos.y)||cells.some(c=>occ.has(key(c.x,c.y))))continue;out.push({orientation:ori,cells})}
+ }
+ return out
+}
+function cpuWallScore(u,cand,level){
+ let cfg=cpuCfg(level),score=0,mat=D[u.type].mat;
+ // Cover fragile allies; Bow/Mage protection is a real rule, support cover still helps routes.
+ for(let a of alive('cpu'))for(let c of cand.cells)if(Math.abs(c.x-a.x)+Math.abs(c.y-a.y)===1){if(['bow','mage'].includes(a.type))score+=8;else if(['medic','priest','necro','strategist'].includes(a.type))score+=4}
+ // Put the wall between enemy and ally centroids / nearby attack routes.
+ for(let e of alive('human'))for(let a of alive('cpu')){let before=dist(e,a),nearWall=Math.min(...cand.cells.map(c=>dist(e,c)+dist(c,a)));if(nearWall<=before+1)score+=.8}
+ // A wall immediately in front of an approaching fighter has disruption value.
+ for(let e of alive('human').filter(e=>['sword','spear','lance'].includes(e.type)))if(Math.min(...cand.cells.map(c=>dist(e,c)))<=D[e.type].move+1)score+=2.2;
+ if(mat==='iron')score+=4.5;else if(mat==='stone')score+=2.5;
+ // Avoid boxing our own mobile fighters in.
+ for(let a of alive('cpu').filter(a=>['lance','spear','sword'].includes(a.type)))if(cand.cells.filter(c=>dist(c,a)<=1).length>=2)score-=4;
+ return score*cfg.wallValue
+}
+function cpuWorkerPlan(u,level){let starts=[{x:u.x,y:u.y,d:0},...bfs(u,u.movementLeft)],plans=[];for(let pre of starts){for(let cand of cpuWallCandidatesAt(u,pre)){let s=cpuWallScore(u,cand,level)-pre.d*.4;if(s>(level==='master'?7:9))plans.push({pre,cand,score:s})}}return cpuPickPlan(plans,level)}
+function cpuShouldEatBread(u,level){if(!u.actionsLeft||u.hp>=u.maxHp||S.res.cpu.bread<=0)return false;let st=coachState(),r=bobThreatReport(st,u.id),missing=u.maxHp-u.hp;if(r.lethal&&r.damage<u.hp+2)return true;if(level==='master'&&missing>=2&&r.damage>=1)return true;if(missing>=2&&u.hp<=Math.ceil(u.maxHp/2))return true;return false}
+function cpuShouldUseStrategist(u,level){if(u.actionsLeft!==0||u.extraGranted||!alive('cpu','strategist').some(x=>x!==u)||!['sword','spear','lance','bow'].includes(u.type))return false;let t=bestAttack(u);if(!t)return false;let score=cpuAttackScoreAdvanced(u,t,{x:u.x,y:u.y},level),cfg=cpuCfg(level),strat=alive('cpu','strategist').find(x=>x!==u);let threshold=cpuLearnedValue(strat)*cfg.strategistThreshold*18;if(t.hp<=D[u.type].damage)score+=25;if(u.type==='sword')score+=6;return score>=threshold}
 function cpuTurnBeginner(u){
-  let d=D[u.type];
-  if(d.kind==='farmer'&&u.actionsLeft&&Math.random()<0.5&&S.res.cpu.bread<3){farm(u);}
-  if(d.kind==='reviver'&&u.actionsLeft&&S.res.cpu[d.item]>0&&Math.random()<0.5){let c=legalRevives(u)[0]; if(c) revive(u,c);}
-  if(d.kind==='medic'&&u.actionsLeft&&Math.random()<0.5){let ts=alive('cpu').filter(x=>x.type!=='medic'&&x.hp<x.maxHp&&dist(u,x)<=3); if(ts.length) heal(u,rand(ts));}
-  if(d.kind==='worker'&&u.actionsLeft&&S.res.cpu[d.mat]>=2&&Math.random()<0.25){buildWallAuto(u,Math.random()<0.5?'h':'v');}
-  if(d.kind==='mage'&&u.actionsLeft&&Math.random()<0.35){let ts=alive('human').filter(t=>dist(u,t)<=7&&!protectedByWall(t,u));let sacrifice=sacrificeCandidates('cpu',u)[0]; if(ts.length>=2&&sacrifice) mageCast(u,sacrifice);}
-  if(d.kind==='combat'&&u.actionsLeft&&Math.random()<0.55){let t=cpuRandomTarget(u); if(t) attack(u,t);}
-  if(u.movementLeft>0){cpuMoveBasic(u,Math.random()<0.55);}
-  if(d.kind==='combat'&&u.actionsLeft&&Math.random()<0.55){let t=cpuRandomTarget(u); if(t) attack(u,t);}
-  if(u.actionsLeft&&u.hp<u.maxHp&&S.res.cpu.bread>0&&Math.random()<0.45){eatBread(u);}  
+ let d=D[u.type];
+ if(d.kind==='farmer'&&u.actionsLeft&&Math.random()<0.5&&S.res.cpu.bread<3)farm(u);
+ if(d.kind==='reviver'&&u.actionsLeft&&S.res.cpu[d.item]>0&&Math.random()<0.5){let c=legalRevives(u)[0];if(c)revive(u,c)}
+ if(d.kind==='medic'&&u.actionsLeft&&Math.random()<0.5){let ts=alive('cpu').filter(x=>x.type!=='medic'&&x.hp<x.maxHp&&dist(u,x)<=3);if(ts.length)heal(u,rand(ts))}
+ if(d.kind==='worker'&&u.actionsLeft&&S.res.cpu[d.mat]>=2&&Math.random()<0.25)buildWallAuto(u,Math.random()<0.5?'h':'v');
+ if(d.kind==='mage'&&u.actionsLeft&&Math.random()<0.35){let ts=alive('human').filter(t=>dist(u,t)<=7&&!protectedByWall(t,u)),s=sacrificeCandidates('cpu',u)[0];if(ts.length>=2&&s)mageCast(u,s)}
+ if(d.kind==='combat'&&u.actionsLeft&&Math.random()<0.55){let t=cpuRandomTarget(u);if(t)attack(u,t)}
+ if(u.movementLeft>0)cpuMoveBasic(u,Math.random()<0.55);
+ if(d.kind==='combat'&&u.actionsLeft&&Math.random()<0.55){let t=cpuRandomTarget(u);if(t)attack(u,t)}
+ if(u.actionsLeft&&u.hp<u.maxHp&&S.res.cpu.bread>0&&Math.random()<0.45)eatBread(u)
 }
 async function cpuTurnMid(u){
- let d=D[u.type];
- if(d.kind==='medic'){let t=alive('cpu').filter(x=>x.type!=='medic'&&x.hp<x.maxHp&&dist(u,x)<=3).sort((a,b)=>a.hp-b.hp)[0];if(t){heal(u,t);await sleep(cpuDelay*.35)}}
- if(d.kind==='farmer'&&u.actionsLeft&&S.res.cpu.bread<3){farm(u);await sleep(cpuDelay*.3)}
- if(d.kind==='reviver'&&u.actionsLeft&&S.res.cpu[d.item]>0){let c=legalRevives(u)[0];if(c){revive(u,c);await sleep(cpuDelay*.35)}}
- if(d.kind==='worker'&&u.actionsLeft&&S.res.cpu[d.mat]>=2&&nearestEnemy(u)&&dist(u,nearestEnemy(u))<=5){if(Math.random()<.55){if(buildWallAuto(u,Math.random()<.65?'h':'v'))await sleep(cpuDelay*.35)}}
- if(d.kind==='mage'&&u.actionsLeft){let ts=alive('human').filter(t=>dist(u,t)<=7&&!protectedByWall(t,u));let sacrifice=sacrificeCandidates('cpu',u)[0];if(ts.length>=2&&sacrifice){mageCast(u,sacrifice);await sleep(cpuDelay*.45)}}
- if(d.kind==='combat'&&u.actionsLeft){let t=bestAttack(u);if(t){attack(u,t);await sleep(cpuDelay*.35)}}
- if(u.movementLeft>0){cpuMoveBasic(u,false);await sleep(cpuDelay*.38)}
- if((d.kind==='combat')&&u.actionsLeft){let t=bestAttack(u);if(t){attack(u,t);await sleep(cpuDelay*.35)}}
- if(u.actionsLeft&&u.hp<u.maxHp&&S.res.cpu.bread>0){eatBread(u);await sleep(cpuDelay*.25)}
- if(u.actionsLeft===0&&d.kind==='combat'&&alive('cpu','strategist').some(x=>x!==u)&&!u.extraGranted&&bestAttack(u)){strategistBoost(u);await sleep(cpuDelay*.3);let t=bestAttack(u);if(t)attack(u,t)}
+ let d=D[u.type],level='mid';
+ if(d.kind==='reviver'&&u.actionsLeft&&S.res.cpu[d.item]>0){let p=cpuRevivePlan(u,level);if(p){moveToPosition(u,p.pre);await sleep(cpuDelay*.18);revive(u,p.target);await sleep(cpuDelay*.2);if(u.movementLeft>0)moveToPosition(u,p.post);return}}
+ if(d.kind==='medic'&&u.actionsLeft){let p=cpuMedicPlan(u,level);if(p){moveToPosition(u,p.pre);await sleep(cpuDelay*.18);heal(u,p.target);await sleep(cpuDelay*.2);if(u.movementLeft>0)moveToPosition(u,p.post);return}}
+ if(d.kind==='mage'&&u.actionsLeft){let p=cpuMagePlan(u,level);if(p){moveToPosition(u,p.pre);await sleep(cpuDelay*.18);mageCast(u,p.sacrifice);await sleep(cpuDelay*.22);if(u.movementLeft>0)moveToPosition(u,p.post);return}}
+ if(d.kind==='worker'&&u.actionsLeft&&S.res.cpu[d.mat]>=2){let p=cpuWorkerPlan(u,level);if(p){moveToPosition(u,p.pre);await sleep(cpuDelay*.15);buildWallFromCells(u,p.cand.cells,p.cand.orientation);await sleep(cpuDelay*.18);return}}
+ if(d.kind==='combat'){let p=chooseMidCombatPlan(u);if(p){cpuExecuteCombatPlan(u,p);await sleep(cpuDelay*.3)}}
+ else if(u.movementLeft>0)cpuMoveBasic(u,false);
+ if(cpuShouldEatBread(u,level)){eatBread(u);await sleep(cpuDelay*.18)}
+ if(cpuShouldUseStrategist(u,level)){strategistBoost(u);await sleep(cpuDelay*.18);let t=bestAttack(u);if(t)attack(u,t)}
+ if(d.kind==='farmer'&&u.actionsLeft&&S.res.cpu.bread<3&&alive('cpu').some(x=>x.hp<x.maxHp))farm(u)
 }
 async function cpuTurnMaster(u){
- let d=D[u.type];
- if(d.kind==='reviver'&&u.actionsLeft&&S.res.cpu[d.item]>0){let plan=chooseMasterRevivePlan(u); if(plan){moveToPosition(u,plan.p); await sleep(cpuDelay*.25); revive(u,plan.target); await sleep(cpuDelay*.3);}}
- if(d.kind==='medic'&&u.actionsLeft){let plan=chooseMasterMedicPlan(u); if(plan){moveToPosition(u,plan.p); await sleep(cpuDelay*.25); heal(u,plan.target); await sleep(cpuDelay*.3);}}
- if(d.kind==='farmer'&&u.actionsLeft&&S.res.cpu.bread<3 && alive('cpu').some(x=>x.hp<x.maxHp)){farm(u); await sleep(cpuDelay*.2)}
- if(d.kind==='worker'&&u.actionsLeft&&S.res.cpu[d.mat]>=2){let near=nearestEnemy(u); if(near && dist(u,near)<=5 && Math.random()<0.8){ if(buildWallAuto(u,Math.random()<0.5?'h':'v')) await sleep(cpuDelay*.25); }}
- if(d.kind==='mage'&&u.actionsLeft){let plan=chooseMasterMagePlan(u); if(plan){moveToPosition(u,plan.p); await sleep(cpuDelay*.25); mageCast(u,plan.sacrifice); await sleep(cpuDelay*.35);}}
- if(d.kind==='combat'&&u.actionsLeft){let plan=chooseMasterCombatPlan(u); if(plan){moveToPosition(u,plan.p); await sleep(cpuDelay*.25); if(plan.opt){ if(plan.opt.kind==='unit') attack(u,plan.opt.target); else attackWall(u,plan.opt.target); await sleep(cpuDelay*.35); }}}
- if(u.movementLeft>0 && d.kind==='combat' && !bestAttack(u)){cpuMoveBasic(u,false); await sleep(cpuDelay*.25)}
- if(d.kind==='combat'&&u.actionsLeft){let t=bestAttack(u); if(t){attack(u,t); await sleep(cpuDelay*.25)}}
- if(u.actionsLeft&&u.hp<u.maxHp&&S.res.cpu.bread>0){eatBread(u); await sleep(cpuDelay*.2)}
- if(u.actionsLeft===0&&d.kind==='combat'&&alive('cpu','strategist').some(x=>x!==u)&&!u.extraGranted&&bestAttack(u)){strategistBoost(u); await sleep(cpuDelay*.2); let t=bestAttack(u); if(t) attack(u,t)}
+ let d=D[u.type],level='master';
+ // Late support pieces get exact move-action-retreat search first.
+ if(d.kind==='reviver'&&u.actionsLeft&&S.res.cpu[d.item]>0){let p=cpuRevivePlan(u,level);if(p){moveToPosition(u,p.pre);await sleep(cpuDelay*.15);revive(u,p.target);await sleep(cpuDelay*.18);if(u.movementLeft>0)moveToPosition(u,p.post);return}}
+ if(d.kind==='medic'&&u.actionsLeft){let p=cpuMedicPlan(u,level);if(p){moveToPosition(u,p.pre);await sleep(cpuDelay*.15);heal(u,p.target);await sleep(cpuDelay*.18);if(u.movementLeft>0)moveToPosition(u,p.post);return}}
+ if(d.kind==='mage'&&u.actionsLeft){let p=cpuMagePlan(u,level);if(p){moveToPosition(u,p.pre);await sleep(cpuDelay*.15);mageCast(u,p.sacrifice);await sleep(cpuDelay*.2);if(u.movementLeft>0)moveToPosition(u,p.post);return}}
+ if(d.kind==='worker'&&u.actionsLeft&&S.res.cpu[d.mat]>=2){let p=cpuWorkerPlan(u,level);if(p){moveToPosition(u,p.pre);await sleep(cpuDelay*.12);buildWallFromCells(u,p.cand.cells,p.cand.orientation);await sleep(cpuDelay*.16);if(u.movementLeft>0){let st=coachState(),su=bobUnitAt(st,u.id),posts=[{x:u.x,y:u.y,d:0},...bobBfs(st,su,u.movementLeft)].sort((a,b)=>cpuEndPositionScore(st,u,b,level,true)-cpuEndPositionScore(st,u,a,level,true));moveToPosition(u,posts[0])}return}}
+ if(d.kind==='combat'){let p=chooseMasterCombatPlan(u);if(p){cpuExecuteCombatPlan(u,p);await sleep(cpuDelay*.25)}}
+ else if(u.movementLeft>0){let starts=[{x:u.x,y:u.y,d:0},...bfs(u,u.movementLeft)],st=coachState();starts.sort((a,b)=>cpuEndPositionScore(st,u,b,level,false)-cpuEndPositionScore(st,u,a,level,false));moveToPosition(u,starts[0])}
+ if(cpuShouldEatBread(u,level)){eatBread(u);await sleep(cpuDelay*.15)}
+ if(cpuShouldUseStrategist(u,level)){strategistBoost(u);await sleep(cpuDelay*.16);let t=bestAttack(u);if(t){attack(u,t);await sleep(cpuDelay*.16)}}
+ if(d.kind==='farmer'&&u.actionsLeft&&S.res.cpu.bread<3){let wounded=alive('cpu').filter(x=>x.hp<x.maxHp);if(wounded.length&&Math.max(...wounded.map(x=>x.maxHp-x.hp))>=2)farm(u)}
 }
 async function runCpuPhase(type){
- let units=alive('cpu',type).slice(); units.sort((a,b)=>cpuPriority(b)-cpuPriority(a));
- for(let u of units){ if(S.gameOver||!u.alive)continue; S.selected=u; coachBeginActivation(u); render(); await sleep(cpuDelay*.5); log(`CPU activates ${D[u.type].short} #${u.id}.`); if(S.cpuLevel==='beginner') cpuTurnBeginner(u); else if(S.cpuLevel==='master') await cpuTurnMaster(u); else await cpuTurnMid(u); if(!S.gameOver) coachFinishActivation(u); u.activated=true; S.selected=null; render(); await sleep(cpuDelay*.4); }
- S.busy=false; render(); if(!S.gameOver)advancePhase();
+ let units=alive('cpu',type).slice();units.sort((a,b)=>cpuPriority(b)-cpuPriority(a));
+ for(let u of units){if(S.gameOver||!u.alive)continue;S.selected=u;coachBeginActivation(u);render();await sleep(cpuDelay*.42);log(`CPU activates ${D[u.type].short} #${u.id}.`);if(S.cpuLevel==='beginner')cpuTurnBeginner(u);else if(S.cpuLevel==='master')await cpuTurnMaster(u);else await cpuTurnMid(u);if(!S.gameOver)coachFinishActivation(u);u.activated=true;S.selected=null;render();await sleep(cpuDelay*.32)}
+ S.busy=false;render();if(!S.gameOver)advancePhase();
 }
 $('#newBtn').onclick=()=>{S.cpuLevel=getCpuLevel(); newBattle();};
 $('#againBtn').onclick=newBattle;

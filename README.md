@@ -1,16 +1,41 @@
-# King's Grid Battle Practice — Training Mode v0.1.0
+# King's Grid Battle Practice Training Mode v0.5.0
 
-GitHub Pages build of the Human-vs-CPU Battle Practice prototype.
+Browser-based Human-vs-CPU Battle Practice for King's Grid, designed primarily for iPad landscape play.
 
-## New in v0.1.0
+## v0.5.0 — stronger CPU
 
-- Post-battle King's Grid Coach review
-- 1–100 performance score independent of win/loss
-- Best Move / Good / Inaccuracy / Mistake / Blunder classifications
-- Tactical, positioning, support/resource, and conversion ratings
-- Key teaching moments with suggested alternatives
-- Structured game history recorded during human activations for future deeper replay/analysis
+This build upgrades **Mid** and **Master** using the curated corrected 500-battle AI study supplied for the project.
 
-## Publish
+Important: the build does **not** copy the study's failed final Learner weights. It follows the package's recommendation to start from the corrected hand-designed MASTER policy and carry forward the validated tactical lessons.
 
-Replace the existing repository's `index.html` with this one and commit the change. GitHub Pages will update automatically.
+### Mid
+
+- Uses tactical move/action/move search rather than simple greedy movement.
+- Values kills, initiative denial, safety, target importance and post-attack retreat.
+- Improved Medic/revival positioning, selective Mage use, walls, Bread and Strategist use.
+- Small amount of exploration remains so Mid is strong but not completely deterministic.
+
+### Master
+
+- Uses the corrected MASTER policy seed: high safety awareness, kill/tempo bonuses, threat focus, kiting, pressure, support value, selective Mage/Strategist thresholds.
+- Searches **partial move → action → remaining move** lines.
+- Uses Coach Bob's initiative-aware threat projection to judge whether the final square leaves a unit hanging before its next activation.
+- Gives extra value to killing units before their initiative, informed by the corrected study's observed death-before-own-step rates.
+- Improved Lance/Spear/Sword tactics, Bow ammunition discipline, Spear knockback board control, support retreat, wall placement and advantage conversion.
+- Refuses ordinary attacks on Iron walls.
+- Becomes more willing to convert an advantage instead of endlessly kiting as a battle drags on.
+
+## Existing Training Mode features
+
+- 10×10 board and locked Battle Practice rules
+- Beginner / Mid / Master CPU
+- Coach Bob live suggestions
+- Human and CPU post-game reviews
+- 1–100 review scores and key teaching moments
+- Concede and stalemate controls
+- 60-round cap
+- iPad/touch-first interface
+
+## GitHub Pages
+
+Upload these files to the repository root, then publish the `main` branch from `/ (root)` in **Settings → Pages**.
